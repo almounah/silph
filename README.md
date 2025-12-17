@@ -57,7 +57,7 @@ Plus, while documenting myself on the subject I found a very interesting article
 
 Basically the author is showing us how by activating some options, an event will tell blueteamers that SAM is getting dumped. He then piped this event into Elastic. You can see the event triggered here
 
-[samevent][samevent.png]
+![samevent](samevent.png)
 
 The python code that generates the event provided in the article uses `RegOpenKeyEx` and `RegSaveKeyEx`.
 
